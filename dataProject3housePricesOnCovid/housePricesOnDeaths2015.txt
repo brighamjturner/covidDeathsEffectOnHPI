@@ -1,0 +1,265 @@
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+      name:  <unnamed>
+       log:  C:\Users\bjt72\Box\dataProject3housePricesOnCovid\housePricesOnDeaths2015.txt
+  log type:  text
+ opened on:   8 Dec 2022, 16:36:38
+
+. clear
+
+. 
+. /*
+> NAME: Brigham Turner
+> Data Project 3 */
+. ************************************
+. 
+. /////////////// step 1 getting rural urban continuum codes /////////////////////
+> //access this from: https://www.ers.usda.gov/data-products/rural-urban-continuum-codes/
+. import delimited using ruralurbancodes2013.csv, clear
+(encoding automatically selected: UTF-8)
+(6 vars, 3,240 obs)
+
+. keep rucc_2013 fips
+
+. gen rucc_squared = rucc_2013 * rucc_2013
+(8 missing values generated)
+
+. save "urbanRuralCodes.dta", replace
+file urbanRuralCodes.dta saved
+
+. 
+. /////////////// step 2 getting mortality rates /////////////////////
+> //how to mortality rates, go to follow this link to the cdc website and fill out the form
+. //https://wonder.cdc.gov/controller/datarequest/D140
+. 
+. cd C:\Users\bjt72\Box\dataProject3
+C:\Users\bjt72\Box\dataProject3
+
+. import delimited using  CompressedMortality.csv, clear
+(encoding automatically selected: ISO-8859-1)
+(6 vars, 3,171 obs)
+
+. //should be multiplied by 100,000 accordign to the cdc https://www.cdc.gov/csels/dsepd/ss1978/lesson3/section3.html
+. 
+. gen mortalityRate = 100000 * deaths/population
+(66 missing values generated)
+
+. rename countycode fips
+
+. collapse (mean) mortalityRate  , by(fips) //(max) geographicarea
+
+. keep mortalityRate fips
+
+. 
+. save "mortalityRateByCounty.dta", replace
+file mortalityRateByCounty.dta saved
+
+. 
+. ///////////// step 3, preparing to convert zip codes to fip //////////////
+> // go to https://www.huduser.gov/portal/datasets/usps_crosswalk.html
+. // select zip-county, for most recent time period
+. import delimited using ZIP_COUNTY_122021.csv, clear
+(encoding automatically selected: ISO-8859-1)
+(8 vars, 54,260 obs)
+
+. gen threedigitzipcode = floor(zip/100)
+
+. rename county fips // yes, these are fips codes, I checked
+
+. keep threedigitzipcode fips usps_zip_pref_state
+
+. save "zipToCounty.dta", replace
+file zipToCounty.dta saved
+
+. 
+. ////////////// step 4, getting housing prices ///////////////
+> //how to get housing price data:
+. //go to:
+. //https://www.fhfa.gov/DataTools/Downloads/Pages/House-Price-Index-Datasets.aspx
+. //download Three-Digit ZIP Codes (Developmental Index; Not Seasonally Adjusted)
+. import delimited using HPI_AT_BDL_ZIP3.csv, clear
+(encoding automatically selected: ISO-8859-1)
+(7 vars, 38,502 obs)
+
+. keep if year == 2015 | year == 2013 |year == 2012 | year == 2011 
+(34,986 observations deleted)
+
+. tab year
+
+       Year |      Freq.     Percent        Cum.
+------------+-----------------------------------
+       2011 |        879       25.00       25.00
+       2012 |        879       25.00       50.00
+       2013 |        879       25.00       75.00
+       2015 |        879       25.00      100.00
+------------+-----------------------------------
+      Total |      3,516      100.00
+
+. drop annualchange
+
+. drop hpiwith1990base
+
+. drop hpiwith2000base
+
+. 
+. reshape wide hpi, i(threedigitzipcode) j(year)
+(j = 2011 2012 2013 2015)
+
+Data                               Long   ->   Wide
+-----------------------------------------------------------------------------
+Number of observations            3,516   ->   879         
+Number of variables                   4   ->   6           
+j variable (4 values)              year   ->   (dropped)
+xij variables:
+                                    hpi   ->   hpi2011 hpi2012 ... hpi2015
+-----------------------------------------------------------------------------
+
+. merge 1:m threedigitzipcode   using zipToCounty.dta
+(variable threedigitzipcode was int, now float to accommodate using data's values)
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           829
+        from master                         0  (_merge==1)
+        from using                        829  (_merge==2)
+
+    Matched                            53,431  (_merge==3)
+    -----------------------------------------
+
+. 
+. keep if _merge == 3
+(829 observations deleted)
+
+. keep fips hpi2011 hpi2012 hpi2013 hpi2015 
+
+. collapse (mean) hpi2011 (mean) hpi2012 (mean) hpi2013 (mean) hpi2015   , by(fips)
+
+. 
+. ////////////// step 5, combining mortality rates, house prices, and urban rural continuum codes ////////
+> merge 1:1 fips   using mortalityRateByCounty.dta
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                            40
+        from master                        38  (_merge==1)
+        from using                          2  (_merge==2)
+
+    Matched                             3,104  (_merge==3)
+    -----------------------------------------
+
+. keep if _merge == 3
+(40 observations deleted)
+
+. drop _merge
+
+. merge 1:m fips   using urbanRuralCodes.dta
+
+    Result                      Number of obs
+    -----------------------------------------
+    Not matched                           136
+        from master                         0  (_merge==1)
+        from using                        136  (_merge==2)
+
+    Matched                             3,104  (_merge==3)
+    -----------------------------------------
+
+. keep if _merge == 3
+(136 observations deleted)
+
+. drop _merge
+
+. 
+. ////////////// step 6, generating state variable, do regression, and output results ////////
+> gen state = floor( fips / 1000)
+
+. reg hpi2015 mortalityRate hpi2013 hpi2012 hpi2011 rucc_2013 rucc_squared i.state , robust
+
+Linear regression                               Number of obs     =      3,104
+                                                F(55, 3047)       =          .
+                                                Prob > F          =          .
+                                                R-squared         =     0.9938
+                                                Root MSE          =      11.63
+
+-------------------------------------------------------------------------------
+              |               Robust
+      hpi2015 | Coefficient  std. err.      t    P>|t|     [95% conf. interval]
+--------------+----------------------------------------------------------------
+mortalityRate |  -.0006817   .0009977    -0.68   0.494    -.0026379    .0012745
+      hpi2013 |   1.751067   .3905836     4.48   0.000     .9852335    2.516901
+      hpi2012 |  -.7012045   .5830922    -1.20   0.229    -1.844498    .4420894
+      hpi2011 |   .0572578   .1839819     0.31   0.756    -.3034835    .4179991
+    rucc_2013 |  -3.120329    .602081    -5.18   0.000    -4.300855   -1.939803
+ rucc_squared |   .2696917   .0576806     4.68   0.000     .1565949    .3827885
+              |
+        state |
+           2  |   -2.14759   2.835836    -0.76   0.449    -7.707935    3.412755
+           4  |    14.4778     7.5585     1.92   0.056    -.3424739    29.29808
+           5  |  -2.058835   1.160876    -1.77   0.076    -4.335015    .2173447
+           6  |   46.36948   20.05783     2.31   0.021      7.04124    85.69773
+           8  |   24.11527   3.558475     6.78   0.000     17.13801    31.09252
+           9  |   -25.0716   5.340385    -4.69   0.000    -35.54272   -14.60048
+          10  |  -6.159314   3.890134    -1.58   0.113    -13.78687    1.468238
+          11  |   22.89295   9.517917     2.41   0.016     4.230759    41.55514
+          12  |   26.60185   6.831029     3.89   0.000     13.20796    39.99574
+          13  |   9.350426   3.354065     2.79   0.005     2.773966    15.92689
+          15  |   21.28272   7.442536     2.86   0.004     6.689821    35.87562
+          16  |   12.88235   3.396891     3.79   0.000     6.221915    19.54278
+          17  |  -2.831912   1.096901    -2.58   0.010    -4.982652   -.6811717
+          18  |   .5376582   .9644514     0.56   0.577    -1.353383    2.428699
+          19  |   .0795876   1.589074     0.05   0.960    -3.036179    3.195354
+          20  |   .9668908   1.107602     0.87   0.383    -1.204831    3.138613
+          21  |   1.131509    1.03098     1.10   0.273    -.8899771    3.152995
+          22  |  -3.625186    1.41403    -2.56   0.010    -6.397736   -.8526363
+          23  |  -6.651726   2.072484    -3.21   0.001    -10.71534   -2.588117
+          24  |   -15.8392   2.554075    -6.20   0.000    -20.84709   -10.83132
+          25  |  -6.947371   5.065161    -1.37   0.170    -16.87885    2.984107
+          26  |   7.313933   2.536891     2.88   0.004     2.339743    12.28812
+          27  |   1.303236   2.377465     0.55   0.584    -3.358362    5.964834
+          28  |   2.667939   1.026271     2.60   0.009     .6556849    4.680193
+          29  |    3.24313   1.242583     2.61   0.009     .8067439    5.679517
+          30  |   4.022056   2.529513     1.59   0.112    -.9376674     8.98178
+          31  |   6.585775    2.46618     2.67   0.008     1.750231    11.42132
+          32  |   41.76327   16.06265     2.60   0.009     10.26854    73.25799
+          33  |   1.932396   1.647951     1.17   0.241    -1.298813    5.163604
+          34  |  -23.76736   3.698431    -6.43   0.000    -31.01903   -16.51569
+          35  |   -12.6792   1.808378    -7.01   0.000    -16.22497   -9.133436
+          36  |  -17.98874   4.321346    -4.16   0.000    -26.46179   -9.515691
+          37  |  -5.958613   1.274925    -4.67   0.000    -8.458413   -3.458813
+          38  |   3.949966   6.069061     0.65   0.515    -7.949902    15.84984
+          39  |   4.245571    .836883     5.07   0.000     2.604658    5.886483
+          40  |   3.056985   1.304365     2.34   0.019     .4994609     5.61451
+          41  |    28.2009    7.80192     3.61   0.000     12.90334    43.49846
+          42  |  -7.555341   1.219857    -6.19   0.000    -9.947167   -5.163514
+          44  |  -5.780256   3.765882    -1.53   0.125    -13.16418     1.60367
+          45  |   4.376981   1.868948     2.34   0.019     .7124537    8.041508
+          46  |  -1.623506   2.787126    -0.58   0.560    -7.088344    3.841331
+          47  |   4.447248   1.464781     3.04   0.002     1.575188    7.319308
+          48  |   10.66695   2.170895     4.91   0.000      6.41038    14.92351
+          49  |   6.925454   6.145825     1.13   0.260     -5.12493    18.97584
+          50  |  -10.76305   2.975101    -3.62   0.000    -16.59646   -4.929642
+          51  |  -12.00713   1.370596    -8.76   0.000    -14.69452   -9.319749
+          53  |   17.14217   4.463295     3.84   0.000     8.390794    25.89354
+          54  |   3.899563   2.294672     1.70   0.089    -.5996982    8.398824
+          55  |  -3.975448   1.581509    -2.51   0.012    -7.076381   -.8745145
+          56  |   3.722817   4.824955     0.77   0.440    -5.737679    13.18331
+              |
+        _cons |  -11.48168   3.297684    -3.48   0.001    -17.94759   -5.015769
+-------------------------------------------------------------------------------
+
+. putexcel set resultsRegression.xlsx, sheet(absolutePrices2015) modify
+
+. matrix results = r(table)'
+
+. putexcel A1 = matrix(results), names nformat(number_d2)
+file resultsRegression.xlsx saved
+
+. 
+. histogram mortalityRate
+(bin=34, start=144.63589, width=88.033938)
+
+. 
+. log close
+      name:  <unnamed>
+       log:  C:\Users\bjt72\Box\dataProject3housePricesOnCovid\housePricesOnDeaths2015.txt
+  log type:  text
+ closed on:   8 Dec 2022, 16:36:39
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
